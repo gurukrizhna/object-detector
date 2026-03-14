@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Virtual Tripwire Counter</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a;
+            color: #f1f5f9;
+            overflow-x: hidden;
+        }
+
+        .canvas-container {
+            position: relative;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            border-radius: 1rem;
+            overflow: hidden;
+            border: 1px solid #334155;
+        }
+
+        #outputCanvas {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .status-badge {
+            transition: all 0.3s ease;
+        }
+
+        .loading-overlay {
+            background: rgba(15, 23, 42, 0.9);
+            backdrop-filter: blur(8px);
+        }
+
+        .glow {
+            box-shadow: 0 0 15px rgba(56, 189, 248, 0.5);
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-6xl mx-auto">
+        <!-- Header -->
+        <header class="mb-8 text-center md:text-left flex flex-col md:flex-row md:items-end justify-between gap-4">
+            <div>
+                <h1 class="text-3xl font-bold tracking-tight text-sky-400">VisionTrack AI</h1>
+                <p class="text-slate-400">Client-side Object Counting & Virtual Tripwire</p>
+            </div>
+            <div class="flex gap-4">
+                <div class="bg-slate-800 rounded-lg p-3 border border-slate-700">
+                    <span class="block text-xs uppercase text-slate-500 font-bold mb-1">Total Count</span>
+                    <span id="counterDisplay" class="text-3xl font-mono font-bold text-white">0</span>
+                </div>
+                <button id="resetBtn" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg transition text-sm font-semibold border border-slate-600">
+                    Reset
+                </button>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-4 gap-8">
+            <!-- Sidebar Controls -->
+            <div class="lg:col-span-1 space-y-6">
+                <section class="bg-slate-800 p-5 rounded-xl border border-slate-700">
+                    <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
+                        <svg class="w-5 h-5 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"></path></svg>
+                        Configuration
+                    </h2>
+                    
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-2">Track Object</label>
+                            <select id="objectFilter" class="w-full bg-slate-900 border border-slate-600 rounded-lg p-2 text-white focus:ring-2 focus:ring-sky-500 outline-none">
+                                <option value="person">Person</option>
+                                <option value="bottle">Bottle</option>
+                                <option value="cup">Cup</option>
+                                <option value="cell phone">Cell Phone</option>
+                                <option value="car">Car</option>
+                                <option value="laptop">Laptop</option>
+                                <option value="chair">Chair</option>
+                            </select>
+                        </div>
+
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-2">Tripwire Position (%)</label>
+                            <input type="range" id="linePosition" min="10" max="90" value="50" class="w-full accent-sky-400">
+                        </div>
+
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-2">Direction</label>
+                            <div class="flex gap-2">
+                                <button id="dirBoth" class="flex-1 bg-sky-600 text-white text-xs py-2 rounded active">Both</button>
+                                <button id="dirDown" class="flex-1 bg-slate-700 text-slate-300 text-xs py-2 rounded">Down</button>
+                                <button id="dirUp" class="flex-1 bg-slate-700 text-slate-300 text-xs py-2 rounded">Up</button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="bg-slate-800 p-5 rounded-xl border border-slate-700">
+                    <h2 class="text-sm font-bold text-slate-500 uppercase mb-3">System Logs</h2>
+                    <div id="log" class="text-xs font-mono h-32 overflow-y-auto space-y-1 text-slate-400">
+                        <div>Initialize system...</div>
+                    </div>
+                </section>
+            </div>
+
+            <!-- Main Viewport -->
+            <div class="lg:col-span-3">
+                <div class="canvas-container bg-black aspect-video relative">
+                    <video id="video" autoplay playsinline muted class="hidden"></video>
+                    <canvas id="outputCanvas"></canvas>
+                    
+                    <!-- Loading State -->
+                    <div id="loadingOverlay" class="loading-overlay absolute inset-0 flex flex-col items-center justify-center z-50">
+                        <div class="w-12 h-12 border-4 border-sky-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+                        <p id="loaderText" class="text-lg font-medium text-sky-400">Loading COCO-SSD Model...</p>
+                        <p class="text-xs text-slate-500 mt-2">This may take a moment on first load.</p>
+                    </div>
+
+                    <!-- HUD -->
+                    <div class="absolute top-4 right-4 pointer-events-none">
+                        <div id="statusIndicator" class="status-badge flex items-center gap-2 bg-slate-900/80 backdrop-blur px-3 py-1.5 rounded-full border border-slate-700">
+                            <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                            <span class="text-xs font-bold tracking-wider uppercase">Engine Offline</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="mt-4 flex items-center justify-between text-sm text-slate-500">
+                    <p>Powered by TensorFlow.js (COCO-SSD)</p>
+                    <p id="fpsDisplay">FPS: 0</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden audio for notification (optional/mocked) -->
+    <div id="messageBox" class="fixed bottom-4 right-4 translate-y-20 transition-transform duration-300 bg-sky-500 text-white px-6 py-3 rounded-lg shadow-xl font-bold flex items-center gap-3">
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+        Object Counted!
+    </div>
+
+    <script>
+        // --- Core Configuration ---
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('outputCanvas');
+        const ctx = canvas.getContext('2d');
+        const logContainer = document.getElementById('log');
+        const counterDisplay = document.getElementById('counterDisplay');
+        const statusBadge = document.getElementById('statusIndicator');
+        const fpsDisplay = document.getElementById('fpsDisplay');
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const lineSlider = document.getElementById('linePosition');
+        const filterSelect = document.getElementById('objectFilter');
+
+        let model = null;
+        let totalCount = 0;
+        let lastFrameTime = performance.now();
+        let frameCount = 0;
+        let trackedObjects = new Map(); // Store history of object centroids
+        let objectIdCounter = 0;
+
+        // --- Logic Parameters ---
+        let config = {
+            lineYPercent: 0.5,
+            targetClass: 'person',
+            trackingThreshold: 50, // Pixels
+            maxHistory: 5
+        };
+
+        // --- Logging Utility ---
+        function logger(msg) {
+            const div = document.createElement('div');
+            div.textContent = `> ${msg}`;
+            logContainer.prepend(div);
+            if (logContainer.childNodes.length > 20) logContainer.lastChild.remove();
+        }
+
+        // --- Notification ---
+        function notify() {
+            const box = document.getElementById('messageBox');
+            box.classList.remove('translate-y-20');
+            setTimeout(() => box.classList.add('translate-y-20'), 1500);
+        }
+
+        // --- Startup ---
+        async function setupCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'user', width: 640, height: 480 },
+                    audio: false
+                });
+                video.srcObject = stream;
+                return new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        resolve(video);
+                    };
+                });
+            } catch (err) {
+                logger("Error accessing camera: " + err.message);
+                document.getElementById('loaderText').innerText = "Camera Access Denied";
+                document.getElementById('loaderText').classList.add('text-red-500');
+            }
+        }
+
+        async function init() {
+            logger("Requesting camera...");
+            await setupCamera();
+            
+            logger("Loading model...");
+            model = await cocoSsd.load();
+            
+            loadingOverlay.style.display = 'none';
+            statusBadge.querySelector('span:first-child').classList.replace('bg-red-500', 'bg-green-500');
+            statusBadge.querySelector('span:last-child').innerText = 'Engine Online';
+            logger("AI Ready. Tracking started.");
+            
+            render();
+        }
+
+        // --- The Counting Engine ---
+        function updateTracking(detections) {
+            const currentLineY = canvas.height * config.lineYPercent;
+            const currentFrameDetections = [];
+
+            // 1. Filter and identify centroids for current frame
+            detections.forEach(det => {
+                if (det.class === config.targetClass && det.score > 0.6) {
+                    const [x, y, w, h] = det.bbox;
+                    const centroid = { x: x + w / 2, y: y + h / 2 };
+                    currentFrameDetections.push({ centroid, bbox: det.bbox });
+                }
+            });
+
+            // 2. Simple Centroid Association (The "Tracker")
+            // In a real app, use Kalman Filters or SORT, but for a browser tripwire,
+            // we associate the closest point from the previous frame.
+            
+            let matchedIds = new Set();
+
+            currentFrameDetections.forEach(current => {
+                let bestMatchId = null;
+                let minDistance = config.trackingThreshold;
+
+                for (let [id, data] of trackedObjects) {
+                    const dist = Math.hypot(current.centroid.x - data.lastPos.x, current.centroid.y - data.lastPos.y);
+                    if (dist < minDistance) {
+                        minDistance = dist;
+                        bestMatchId = id;
+                    }
+                }
+
+                if (bestMatchId !== null) {
+                    // Check for Tripwire Crossing
+                    const prevY = trackedObjects.get(bestMatchId).lastPos.y;
+                    const currY = current.centroid.y;
+
+                    // Did it cross the line?
+                    if ((prevY < currentLineY && currY >= currentLineY) || (prevY > currentLineY && currY <= currentLineY)) {
+                        totalCount++;
+                        counterDisplay.innerText = totalCount;
+                        notify();
+                        logger(`Counted: ${config.targetClass} (ID: ${bestMatchId})`);
+                        // Immediately clear this ID to prevent double counting in jitter
+                        trackedObjects.delete(bestMatchId);
+                    } else {
+                        trackedObjects.set(bestMatchId, { lastPos: current.centroid, stale: 0 });
+                        matchedIds.add(bestMatchId);
+                    }
+                } else {
+                    // New object discovered
+                    const newId = objectIdCounter++;
+                    trackedObjects.set(newId, { lastPos: current.centroid, stale: 0 });
+                    matchedIds.add(newId);
+                }
+            });
+
+            // 3. Cleanup stale objects (not seen in this frame)
+            for (let id of trackedObjects.keys()) {
+                if (!matchedIds.has(id)) {
+                    const obj = trackedObjects.get(id);
+                    obj.stale++;
+                    if (obj.stale > 10) trackedObjects.delete(id);
+                }
+            }
+        }
+
+        // --- Render Loop ---
+        async function render() {
+            // Calculate FPS
+            const now = performance.now();
+            frameCount++;
+            if (now - lastFrameTime >= 1000) {
+                fpsDisplay.innerText = `FPS: ${frameCount}`;
+                frameCount = 0;
+                lastFrameTime = now;
+            }
+
+            // Draw Camera Frame
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            // Run Inference
+            const detections = await model.detect(canvas);
+            
+            // Process Logic
+            updateTracking(detections);
+
+            // Draw Visuals
+            drawHUD(detections);
+
+            requestAnimationFrame(render);
+        }
+
+        function drawHUD(detections) {
+            const lineY = canvas.height * config.lineYPercent;
+
+            // Draw Tripwire Line
+            ctx.strokeStyle = '#38bdf8';
+            ctx.lineWidth = 4;
+            ctx.setLineDash([10, 5]);
+            ctx.beginPath();
+            ctx.moveTo(0, lineY);
+            ctx.lineTo(canvas.width, lineY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Line Label
+            ctx.fillStyle = '#38bdf8';
+            ctx.font = 'bold 12px Inter';
+            ctx.fillText('VIRTUAL TRIPWIRE', 10, lineY - 10);
+
+            // Draw Bounding Boxes
+            detections.forEach(det => {
+                if (det.class === config.targetClass) {
+                    const [x, y, w, h] = det.bbox;
+                    
+                    // Box
+                    ctx.strokeStyle = '#fbbf24';
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(x, y, w, h);
+                    
+                    // Label
+                    ctx.fillStyle = '#fbbf24';
+                    ctx.fillRect(x, y - 25, ctx.measureText(det.class).width + 20, 25);
+                    ctx.fillStyle = '#000';
+                    ctx.fillText(`${det.class.toUpperCase()} ${Math.round(det.score * 100)}%`, x + 5, y - 7);
+
+                    // Centroid dot
+                    ctx.fillStyle = '#ef4444';
+                    ctx.beginPath();
+                    ctx.arc(x + w / 2, y + h / 2, 5, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            });
+        }
+
+        // --- Controls ---
+        lineSlider.addEventListener('input', (e) => {
+            config.lineYPercent = e.target.value / 100;
+        });
+
+        filterSelect.addEventListener('change', (e) => {
+            config.targetClass = e.target.value;
+            logger(`Filter changed to: ${e.target.value}`);
+        });
+
+        document.getElementById('resetBtn').addEventListener('click', () => {
+            totalCount = 0;
+            counterDisplay.innerText = "0";
+            trackedObjects.clear();
+            logger("Counter reset.");
+        });
+
+        // Initialize App
+        window.onload = init;
+    </script>
+</body>
+</html>
